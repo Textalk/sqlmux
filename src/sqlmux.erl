@@ -7,8 +7,8 @@
 %% uncontrolled manner.
 -module(sqlmux).
 
--export([create_query/3, create_query/4, sqlquery_to_iolist/2,
-         query_all/3, query_some/3]).
+-export([create_query/3, create_query/4, sqlquery_to_iolist/2, sqlquery_to_iolist/4,
+         query_all/3, query_some/3, query_extract_common/2, query_match_batch/4]).
 -export_type([query_fun/0, query_id/0, escape_fun/0, sqlquery/0, where_cond/0]).
 
 %% @doc Either a nested list of values (list of rows) or a pair with the field names and the nested
@@ -68,6 +68,15 @@ sqlquery_to_iolist(QuoteFun, #sqlquery{select=Select, from=From, where=Where, ot
 	OtherPart = case Other of [] -> []; _ -> [<<" ">>, Other] end,
 	[SelectPart, FromPart, WherePart, OtherPart].
 
+sqlquery_to_iolist(QuoteFun, Query, VaryCol, VaryValues) ->
+    %% There is a varying col. Prepend it to the query.
+    Select = [VaryCol|Query#sqlquery.select],
+    %% Add an IN (...) to the WHERE clause
+    In = [VaryCol, <<" IN (">>, join(<<",">>, lists:map(QuoteFun, VaryValues)), <<")">>],
+    Where = [In|Query#sqlquery.where],
+    Query1 = Query#sqlquery{select = Select, where  = Where},
+    sqlquery_to_iolist(QuoteFun, Query1).
+
 %% @doc Returns the results for each query in the list. Though the queries appear to be executed
 %% one by one, similar queries are merged into batches when possible.
 -spec query_all(query_fun(), escape_fun(), [{query_id(), sqlquery()}]) -> [[[term()]]].
@@ -96,14 +105,7 @@ query_some(QueryFun, QuoteFun, QueryList) ->
 			Result = QueryFun(Sql),
 			[{Qid, Result} || Qid <- Qids];
 		_ ->
-			%% There is a varying col. Prepend it to the query.
-			Select = [VaryCol|Query#sqlquery.select],
-			%% Add an IN (...) to the WHERE clause
-			In = [VaryCol, <<" IN (">>, join(<<",">>, lists:map(QuoteFun, VaryValues)),
-			      <<")">>],
-			Where = [In|Query#sqlquery.where],
-			Query1 = Query#sqlquery{select = Select, where  = Where},
-			Sql = sqlquery_to_iolist(QuoteFun, Query1),
+			Sql = sqlquery_to_iolist(QuoteFun, Query, VaryCol, VaryValues),
 			case QueryFun(Sql) of
 				Rows when is_list(Rows) ->
 					distribute_rows_on_answered_queries(Rows, VaryCol,
